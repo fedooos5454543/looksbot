@@ -1,158 +1,128 @@
-import os, json, base64, asyncio, logging, re
+import os, json, asyncio, logging, re, io
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from dotenv import load_dotenv
 import google.generativeai as genai
+from PIL import Image
 
 load_dotenv()
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not BOT_TOKEN or not GEMINI_API_KEY:
-    raise SystemExit("❌ Нет токенов в .env")
+if not BOT_TOKEN:
+    print("❌ Нет BOT_TOKEN в .env")
+    exit()
+if not GEMINI_API_KEY:
+    print("❌ Нет GEMINI_API_KEY в .env")
+    exit()
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ✅ Правильная модель Gemini
+# Настраиваем Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')  # <-- ИСПРАВЛЕНО
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-SYSTEM_PROMPT = """Проанализируй фото человека и верни ТОЛЬКО JSON объект, без markdown:
+SYSTEM_PROMPT = """Оцени внешность человека на фото по шкале 1-10. 
+Верни ТОЛЬКО JSON, без пояснений:
+{"score": 7.5, "gender": "male", "strengths": ["глаза", "улыбка"], "weaknesses": ["нос"], "advice": ["спорт"], "exercises": ["мьюинг"]}"""
 
-{
-  "score": 7.5,
-  "gender": "male",
-  "strengths": ["красивые глаза"],
-  "weaknesses": ["небольшая асимметрия"],
-  "advice": ["улучшить осанку"],
-  "exercises": ["мьюинг"]
-}
-Оценивай 1-10. Gender: male или female. ТОЛЬКО JSON."""
+def extract_json(text):
+    # Убираем markdown
+    text = text.replace('```json', '').replace('```', '')
+    # Ищем JSON
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except:
+            pass
+    return None
 
-def extract_json(text: str) -> dict:
-    text = re.sub(r'```json\s*', '', text)
-    text = re.sub(r'```\s*', '', text)
-    
-    # Ищем JSON с вложенными скобками
-    stack = []
-    start = -1
-    for i, char in enumerate(text):
-        if char == '{':
-            if not stack:
-                start = i
-            stack.append(char)
-        elif char == '}':
-            if stack:
-                stack.pop()
-                if not stack:
-                    try:
-                        return json.loads(text[start:i+1])
-                    except:
-                        continue
-    
-    return {}
-
-def get_category(s, g):
-    if g == "male":
-        if s <= 3: return "sub 3"
-        elif s <= 4.5: return "sub 5"
-        elif s <= 5.5: return "ltn"
-        elif s <= 7: return "mtn"
-        elif s <= 8.5: return "htn"
-        elif s <= 9.5: return "chad lite"
+def get_category(score, gender):
+    if gender == "male":
+        if score <= 3: return "sub 3"
+        elif score <= 4.5: return "sub 5"
+        elif score <= 5.5: return "ltn"
+        elif score <= 7: return "mtn"
+        elif score <= 8.5: return "htn"
+        elif score <= 9.5: return "chad lite"
         return "chad"
     else:
-        if s <= 3: return "sub 3"
-        elif s <= 4.5: return "sub 5"
-        elif s <= 5.5: return "ltb"
-        elif s <= 7: return "mtb"
-        elif s <= 8.5: return "htb"
-        elif s <= 9.5: return "goddess lite"
+        if score <= 3: return "sub 3"
+        elif score <= 4.5: return "sub 5"
+        elif score <= 5.5: return "ltb"
+        elif score <= 7: return "mtb"
+        elif score <= 8.5: return "htb"
+        elif score <= 9.5: return "goddess lite"
         return "goddess"
 
 @dp.message(Command("start"))
-async def cmd_start(m: types.Message):
-    await m.answer("📸 Отправь фото анфас для анализа")
+async def cmd_start(message: types.Message):
+    await message.answer("📸 Привет! Отправь мне фото анфас, и я оценю твою внешность.")
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-    print("🔍 Получено фото")
-    status_msg = await message.answer("⏳ Анализирую...")
+    print("📸 Получено фото")
+    msg = await message.answer("⏳ Анализирую фото...")
 
     try:
         # Скачиваем фото
         photo = message.photo[-1]
         file = await bot.download(photo.file_id)
-        image_data = file.read()
+        image_bytes = file.read()
         
-        print(f"📸 Размер: {len(image_data)} байт")
-
-        # ✅ Правильный формат для Gemini 1.5
-        import PIL.Image
-        import io
+        # Открываем через PIL
+        image = Image.open(io.BytesIO(image_bytes))
         
-        image = PIL.Image.open(io.BytesIO(image_data))
-        
+        # Отправляем в Gemini
         response = model.generate_content([SYSTEM_PROMPT, image])
+        raw_text = response.text
         
-        raw = response.text
-        print(f"✅ Ответ:\n{raw}")
+        print(f"Ответ Gemini: {raw_text}")
         
-        data = extract_json(raw)
+        # Парсим JSON
+        data = extract_json(raw_text)
         
         if not data:
-            await status_msg.edit_text("❌ Не удалось обработать ответ. Попробуй другое фото.")
-            print(f"⚠️ Не распарсили JSON: {raw[:200]}")
+            await msg.edit_text("❌ Не удалось проанализировать фото. Попробуй другое.")
             return
-
+        
+        # Получаем данные
         score = float(data.get("score", 5.0))
         gender = data.get("gender", "male")
-        
         if gender not in ["male", "female"]:
             gender = "male"
         
-        cat = get_category(score, gender)
-        gr = "мужчина" if gender == "male" else "женщина"
-
-        strengths = data.get('strengths', ['не определено'])
-        weaknesses = data.get('weaknesses', ['не определено'])
-        advice = data.get('advice', ['спите 8 часов'])
-        exercises = data.get('exercises', ['массаж лица'])
-
-        txt = (
-            f"📊 *Оценка:* `{score}/10`\n"
-            f"🏷️ *Категория:* `{cat}` ({gr})\n\n"
-            f"✅ *Сильные стороны:*\n{', '.join(strengths)}\n\n"
-            f"🔻 *Слабые стороны:*\n{', '.join(weaknesses)}\n\n"
-            f"💡 *Советы:*\n{', '.join(advice)}\n\n"
-            f"🏋️ *Упражнения:*\n{', '.join(exercises)}"
+        category = get_category(score, gender)
+        gender_text = "мужчина" if gender == "male" else "женщина"
+        
+        strengths = data.get("strengths", ["нет данных"])
+        weaknesses = data.get("weaknesses", ["нет данных"])
+        advice = data.get("advice", ["спать 8 часов"])
+        exercises = data.get("exercises", ["массаж лица"])
+        
+        # Формируем ответ
+        result = (
+            f"📊 **Оценка:** `{score}/10`\n"
+            f"🏷️ **Категория:** `{category}` ({gender_text})\n\n"
+            f"✅ **Сильные стороны:**\n{chr(10).join(f'• {s}' for s in strengths)}\n\n"
+            f"🔻 **Слабые стороны:**\n{chr(10).join(f'• {w}' for w in weaknesses)}\n\n"
+            f"💡 **Советы:**\n{chr(10).join(f'• {a}' for a in advice)}\n\n"
+            f"🏋️ **Упражнения:**\n{chr(10).join(f'• {e}' for e in exercises)}"
         )
         
-        await status_msg.edit_text(txt, parse_mode="Markdown")
-
+        await msg.edit_text(result, parse_mode="Markdown")
+        
     except Exception as e:
-        import traceback
-        err = traceback.format_exc()
-        print(f"💥 Ошибка:\n{err}")
-        await status_msg.edit_text(f"❌ Ошибка: {type(e).__name__}")
+        print(f"Ошибка: {e}")
+        await msg.edit_text(f"❌ Произошла ошибка: {e}")
 
 async def main():
-    print("🟢 Бот запущен (Gemini 1.5 Flash)")
-    
-    # Проверяем доступные модели
-    try:
-        models = genai.list_models()
-        print("📋 Доступные модели:")
-        for m in models:
-            if 'gemini' in m.name:
-                print(f"  - {m.name}")
-    except Exception as e:
-        print(f"⚠️ Не удалось получить список моделей: {e}")
-    
-    await dp.start_polling(bot, skip_updates=True)
+    print("🟢 Бот запущен!")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
