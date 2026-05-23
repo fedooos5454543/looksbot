@@ -31,12 +31,12 @@ client = AsyncOpenAI(
     timeout=60.0
 )
  
-# Актуальные бесплатные модели OpenRouter с поддержкой зрения (Vision)
+# Актуальные рабочие бесплатные мультимодальные модели на OpenRouter
 MODELS = [
     "google/gemini-2.5-flash:free",
     "qwen/qwen2.5-vl-72b-instruct:free",
     "meta-llama/llama-3.2-11b-vision-instruct:free",
-    "google/gemini-2.0-flash-thinking-exp:free"
+    "google/gemini-2.5-pro:free"
 ]
  
 current_model_index = 0
@@ -91,31 +91,53 @@ async def handle_photo(message: types.Message):
         file = await bot.download(photo.file_id)
         image_bytes = file.read()
         b64 = base64.b64encode(image_bytes).decode()
-        
-        # Пробуем текущую модель
+    except Exception as download_error:
+        print(f"❌ Ошибка скачивания файла: {download_error}")
+        await msg.edit_text("❌ Не удалось загрузить фото из Telegram. Попробуй еще раз.")
+        return
+
+    response = None
+    raw_text = None
+    
+    # Автоматический перебор моделей прямо внутри запроса
+    for attempt in range(len(MODELS)):
         model = MODELS[current_model_index]
-        print(f"🤖 Использую модель: {model}")
+        print(f"🤖 Попытка {attempt + 1}: Использую модель {model}")
         
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": SYSTEM_PROMPT},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-                ]
-            }],
-            temperature=0.1,
-            max_tokens=500
-        )
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": SYSTEM_PROMPT},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                    ]
+                }],
+                temperature=0.1,
+                max_tokens=500
+            )
+            raw_text = response.choices[0].message.content
+            print(f"✅ Успешный ответ от {model}")
+            break # Выходим из цикла, если модель ответила успешно
+            
+        except Exception as api_error:
+            print(f"⚠️ Ошибка модели {model}: {api_error}")
+            # Сдвигаем индекс на следующую модель для будущих запросов и текущего цикла
+            current_model_index = (current_model_index + 1) % len(MODELS)
+            await msg.edit_text(f"⏳ Модель перегружена или недоступна. Подключаю резервный вариант...")
+            await asyncio.sleep(1) # Небольшая пауза перед следующим запросом
+            
+    if not raw_text:
+        await msg.edit_text("❌ Все бесплатные нейросети сейчас перегружены или недоступны. Попробуй позже.")
+        return
         
-        raw_text = response.choices[0].message.content
-        print(f"✅ Ответ: {raw_text}")
-        
+    try:
+        print(f"📝 Получен сырой текст: {raw_text}")
         data = extract_json(raw_text)
         
         if not data:
-            await msg.edit_text("❌ Не удалось проанализировать фото. Попробуй другое.")
+            await msg.edit_text("❌ Не удалось распознать структуру ответа нейросети. Попробуй другое фото.")
             return
         
         score = float(data.get("score", 5.0))
@@ -142,21 +164,13 @@ async def handle_photo(message: types.Message):
         
         await msg.edit_text(result, parse_mode="Markdown")
         
-    except Exception as e:
-        error_msg = str(e)
-        print(f"❌ Ошибка: {error_msg}")
-        
-        # Переключаем модель при ошибках лимита (429) или неверного ID (400),
-        # так как OpenRouter может временно отключать бесплатные модели
-        if "402" in error_msg or "429" in error_msg or "400" in error_msg:
-            current_model_index = (current_model_index + 1) % len(MODELS)
-            await msg.edit_text(f"🔄 Модель недоступна или лимит исчерпан. Переключился на другую. Отправь фото ещё раз.")
-        else:
-            await msg.edit_text(f"❌ Ошибка: {error_msg[:100]}")
+    except Exception as parsing_error:
+        print(f"❌ Ошибка обработки JSON: {parsing_error}")
+        await msg.edit_text("❌ Произошла ошибка при обработке данных. Попробуй еще раз.")
  
 async def main():
     print("🟢 Бот запущен (OpenRouter)")
-    print(f"📋 Доступно моделей: {len(MODELS)}")
+    print(f"📋 Доступно моделей для ротации: {len(MODELS)}")
     await dp.start_polling(bot)
  
 if __name__ == "__main__":
