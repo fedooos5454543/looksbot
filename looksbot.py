@@ -23,7 +23,7 @@ client = AsyncOpenAI(
 )
 
 # ✅ Более стабильная бесплатная модель с поддержкой фото
-MODEL = "google/gemini-2.0-flash-lite:free"
+MODEL = "google/gemini-2.0-flash-lite:free""
 
 SYSTEM_PROMPT = """Верни ТОЛЬКО JSON:
 {"score": float, "gender": "male/female", "strengths": [str], "weaknesses": [str], "advice": [str], "exercises": [str]}"""
