@@ -23,7 +23,7 @@ client = AsyncOpenAI(
 )
 
 # ✅ Более стабильная бесплатная модель с поддержкой фото
-MODEL = "qwen/qwen-2.5-vl-72b-instruct:free"
+MODEL = "mistralai/pixtral-12b:free"
 
 SYSTEM_PROMPT = """Верни ТОЛЬКО JSON:
 {"score": float, "gender": "male/female", "strengths": [str], "weaknesses": [str], "advice": [str], "exercises": [str]}"""
