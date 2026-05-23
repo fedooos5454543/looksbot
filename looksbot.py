@@ -23,7 +23,7 @@ client = AsyncOpenAI(
 )
 
 # ✅ Более стабильная модель для анализа фото
-MODEL = "google/gemini-2.0-flash-001"  # Gemini лучше работает с фото и JSON
+MODEL = "qwen/qwen-2-vl-7b-instruct:free"  # Gemini лучше работает с фото и JSON
 
 SYSTEM_PROMPT = """Ты эксперт по оценке внешности. Проанализируй фото и верни ТОЛЬКО валидный JSON, без markdown, без пояснений, только объект JSON:
 
