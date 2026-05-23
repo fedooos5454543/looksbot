@@ -8,7 +8,7 @@ load_dotenv()
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Получи ключ тут: https://aistudio.google.com/apikey
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not BOT_TOKEN or not GEMINI_API_KEY:
     raise SystemExit("❌ Нет токенов в .env")
@@ -16,36 +16,43 @@ if not BOT_TOKEN or not GEMINI_API_KEY:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Настраиваем Gemini
+# ✅ Правильная модель Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash')
+model = genai.GenerativeModel('gemini-1.5-flash')  # <-- ИСПРАВЛЕНО
 
-SYSTEM_PROMPT = """Проанализируй фото человека и верни ТОЛЬКО JSON объект, без markdown, без пояснений:
+SYSTEM_PROMPT = """Проанализируй фото человека и верни ТОЛЬКО JSON объект, без markdown:
 
 {
   "score": 7.5,
   "gender": "male",
-  "strengths": ["красивые глаза", "симметричное лицо"],
-  "weaknesses": ["небольшая асимметрия губ"],
-  "advice": ["улучшить осанку", "больше улыбаться"],
-  "exercises": ["мьюинг", "массаж лица"]
+  "strengths": ["красивые глаза"],
+  "weaknesses": ["небольшая асимметрия"],
+  "advice": ["улучшить осанку"],
+  "exercises": ["мьюинг"]
 }
-
-Оценивай по шкале 1-10. Gender: "male" или "female". Верни ТОЛЬКО JSON."""
+Оценивай 1-10. Gender: male или female. ТОЛЬКО JSON."""
 
 def extract_json(text: str) -> dict:
-    """Извлечение JSON из ответа"""
-    # Убираем markdown блоки
     text = re.sub(r'```json\s*', '', text)
     text = re.sub(r'```\s*', '', text)
     
-    # Ищем JSON объект
-    m = re.search(r'\{.*\}', text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except:
-            pass
+    # Ищем JSON с вложенными скобками
+    stack = []
+    start = -1
+    for i, char in enumerate(text):
+        if char == '{':
+            if not stack:
+                start = i
+            stack.append(char)
+        elif char == '}':
+            if stack:
+                stack.pop()
+                if not stack:
+                    try:
+                        return json.loads(text[start:i+1])
+                    except:
+                        continue
+    
     return {}
 
 def get_category(s, g):
@@ -68,12 +75,12 @@ def get_category(s, g):
 
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message):
-    await m.answer("📸 Отправь фото анфас. Анализ займёт 5-15 сек.")
+    await m.answer("📸 Отправь фото анфас для анализа")
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-    print("🔍 [DEBUG] Фото получено...")
-    status_msg = await message.answer("⏳ *Анализирую...*", parse_mode="Markdown")
+    print("🔍 Получено фото")
+    status_msg = await message.answer("⏳ Анализирую...")
 
     try:
         # Скачиваем фото
@@ -81,21 +88,24 @@ async def handle_photo(message: types.Message):
         file = await bot.download(photo.file_id)
         image_data = file.read()
         
-        print(f"📸 [DEBUG] Размер фото: {len(image_data)} байт")
+        print(f"📸 Размер: {len(image_data)} байт")
 
-        # Отправляем в Gemini
-        response = model.generate_content([
-            SYSTEM_PROMPT,
-            {"mime_type": "image/jpeg", "data": image_data}
-        ])
+        # ✅ Правильный формат для Gemini 1.5
+        import PIL.Image
+        import io
+        
+        image = PIL.Image.open(io.BytesIO(image_data))
+        
+        response = model.generate_content([SYSTEM_PROMPT, image])
         
         raw = response.text
-        print(f"✅ [DEBUG] Ответ Gemini:\n{raw}")
+        print(f"✅ Ответ:\n{raw}")
         
         data = extract_json(raw)
         
         if not data:
-            await status_msg.edit_text("❌ Не удалось распознать ответ. Попробуй другое фото.")
+            await status_msg.edit_text("❌ Не удалось обработать ответ. Попробуй другое фото.")
+            print(f"⚠️ Не распарсили JSON: {raw[:200]}")
             return
 
         score = float(data.get("score", 5.0))
@@ -126,11 +136,22 @@ async def handle_photo(message: types.Message):
     except Exception as e:
         import traceback
         err = traceback.format_exc()
-        print(f"💥 [DEBUG] CRASH:\n{err}")
-        await status_msg.edit_text(f"❌ Ошибка: {type(e).__name__}\nПроверь логи.")
+        print(f"💥 Ошибка:\n{err}")
+        await status_msg.edit_text(f"❌ Ошибка: {type(e).__name__}")
 
 async def main():
-    print("🟢 БОТ ЗАПУЩЕН (Gemini)")
+    print("🟢 Бот запущен (Gemini 1.5 Flash)")
+    
+    # Проверяем доступные модели
+    try:
+        models = genai.list_models()
+        print("📋 Доступные модели:")
+        for m in models:
+            if 'gemini' in m.name:
+                print(f"  - {m.name}")
+    except Exception as e:
+        print(f"⚠️ Не удалось получить список моделей: {e}")
+    
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
