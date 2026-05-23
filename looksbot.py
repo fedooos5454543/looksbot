@@ -1,48 +1,53 @@
-import os, json, base64, asyncio, logging, re
+import os
+import json
+import base64
+import asyncio
+import logging
+import re
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
-
+ 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
+ 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
+ 
 if not BOT_TOKEN:
     print("❌ Нет BOT_TOKEN")
     exit()
 if not OPENROUTER_API_KEY:
     print("❌ Нет OPENROUTER_API_KEY")
     exit()
-
+ 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
+ 
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
     timeout=60.0
 )
-
-# Бесплатные модели OpenRouter (пробуй по очереди)
+ 
+# Актуальные бесплатные модели OpenRouter с поддержкой зрения (Vision)
 MODELS = [
-    "google/gemini-2.0-flash-exp:free",
-    "google/gemini-2.0-flash-thinking-exp:free",
-    "google/gemini-exp-1206:free",
+    "google/gemini-2.5-flash:free",
     "qwen/qwen2.5-vl-72b-instruct:free",
     "meta-llama/llama-3.2-11b-vision-instruct:free",
+    "google/gemini-2.0-flash-thinking-exp:free"
 ]
-
+ 
 current_model_index = 0
-
+ 
 SYSTEM_PROMPT = """Оцени внешность человека на фото по шкале 1-10. 
 Верни ТОЛЬКО JSON, без пояснений, без markdown:
 {"score":7.5,"gender":"male","strengths":["глаза","улыбка"],"weaknesses":["нос"],"advice":["спорт"],"exercises":["мьюинг"]}"""
-
+ 
 def extract_json(text):
-    text = text.replace('```json', '').replace('```', '')
+    text = text.replace('```json', '').replace('
+```', '')
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         try:
@@ -50,7 +55,7 @@ def extract_json(text):
         except:
             pass
     return None
-
+ 
 def get_category(score, gender):
     if gender == "male":
         if score <= 3: return "sub 3"
@@ -68,18 +73,18 @@ def get_category(score, gender):
         elif score <= 8.5: return "htb"
         elif score <= 9.5: return "goddess lite"
         return "goddess"
-
+ 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer("📸 Привет! Отправь мне фото анфас, и я оценю твою внешность.")
-
+ 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     global current_model_index
     
     print("📸 Получено фото")
     msg = await message.answer("⏳ Анализирую фото...")
-
+ 
     try:
         # Скачиваем фото
         photo = message.photo[-1]
@@ -141,17 +146,18 @@ async def handle_photo(message: types.Message):
         error_msg = str(e)
         print(f"❌ Ошибка: {error_msg}")
         
-        if "402" in error_msg or "429" in error_msg:
-            # Меняем модель на следующую
+        # Переключаем модель при ошибках лимита (429) или неверного ID (400),
+        # так как OpenRouter может временно отключать бесплатные модели
+        if "402" in error_msg or "429" in error_msg or "400" in error_msg:
             current_model_index = (current_model_index + 1) % len(MODELS)
-            await msg.edit_text(f"🔄 Лимит исчерпан. Пробую другую модель... Отправь фото ещё раз.")
+            await msg.edit_text(f"🔄 Модель недоступна или лимит исчерпан. Переключился на другую. Отправь фото ещё раз.")
         else:
             await msg.edit_text(f"❌ Ошибка: {error_msg[:100]}")
-
+ 
 async def main():
     print("🟢 Бот запущен (OpenRouter)")
     print(f"📋 Доступно моделей: {len(MODELS)}")
     await dp.start_polling(bot)
-
+ 
 if __name__ == "__main__":
     asyncio.run(main())
