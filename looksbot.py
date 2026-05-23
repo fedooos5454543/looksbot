@@ -75,23 +75,26 @@ async def handle_photo(message: types.Message):
     image_bytes = file_obj.read()
     base64_img = base64.b64encode(image_bytes).decode("utf-8")
 
-    await message.answer("⏳ *Анализирую...* Подожди 5–15 сек.")
+    await message.answer("⏳ *Анализирую...* Подожди 10–20 сек.")
 
     try:
+        # Убрали response_format (бесплатные модели часто его ломают)
+        # Добавили явный таймаут 60 сек для очередей OpenRouter
         response = await client.chat.completions.create(
             model=MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": [
-                    {"type": "text", "text": "Оцени это фото строго по заданной схеме."},
+                    {"type": "text", "text": "Оцени фото. Верни ТОЛЬКО JSON, без лишних слов."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
                 ]}
             ],
-            response_format={"type": "json_object"},
             temperature=0.1
         )
 
-        data = extract_json(response.choices[0].message.content)
+        raw_text = response.choices[0].message.content
+        data = extract_json(raw_text)
+
         score = float(data["score"])
         gender = data["gender"]
         category = get_category(score, gender)
@@ -114,8 +117,12 @@ async def handle_photo(message: types.Message):
         await message.answer(reply, parse_mode="Markdown")
 
     except Exception as e:
-        logging.error(f"Ошибка: {e}")
-        await message.answer("❌ Ошибка анализа. Попробуй позже или другое фото.")
+        # ВРЕМЕННО: выводим реальную ошибку в чат для отладки
+        await message.answer(
+            f"❌ Ошибка анализа:\n`{type(e).__name__}: {e}`\n\n"
+            f"🔍 Проверь логи на Bothost или попробуй позже."
+        )
+        logging.error(f"OpenRouter Error: {e}")
 
 # Endpoint для хостинга (чтобы Render не засыпал)
 @dp.message(Command("health"))
