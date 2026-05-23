@@ -1,38 +1,48 @@
-import os, json, asyncio, logging, re, io
+import os, json, base64, asyncio, logging, re
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
-import google.generativeai as genai
-from PIL import Image
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 if not BOT_TOKEN:
-    print("❌ Нет BOT_TOKEN в .env")
+    print("❌ Нет BOT_TOKEN")
     exit()
-if not GEMINI_API_KEY:
-    print("❌ Нет GEMINI_API_KEY в .env")
+if not OPENROUTER_API_KEY:
+    print("❌ Нет OPENROUTER_API_KEY")
     exit()
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Настраиваем Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+client = AsyncOpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+    timeout=60.0
+)
+
+# Бесплатные модели OpenRouter (пробуй по очереди)
+MODELS = [
+    "google/gemini-2.0-flash-exp:free",
+    "google/gemini-2.0-flash-thinking-exp:free",
+    "google/gemini-exp-1206:free",
+    "qwen/qwen2.5-vl-72b-instruct:free",
+    "meta-llama/llama-3.2-11b-vision-instruct:free",
+]
+
+current_model_index = 0
 
 SYSTEM_PROMPT = """Оцени внешность человека на фото по шкале 1-10. 
-Верни ТОЛЬКО JSON, без пояснений:
-{"score": 7.5, "gender": "male", "strengths": ["глаза", "улыбка"], "weaknesses": ["нос"], "advice": ["спорт"], "exercises": ["мьюинг"]}"""
+Верни ТОЛЬКО JSON, без пояснений, без markdown:
+{"score":7.5,"gender":"male","strengths":["глаза","улыбка"],"weaknesses":["нос"],"advice":["спорт"],"exercises":["мьюинг"]}"""
 
 def extract_json(text):
-    # Убираем markdown
     text = text.replace('```json', '').replace('```', '')
-    # Ищем JSON
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         try:
@@ -65,6 +75,8 @@ async def cmd_start(message: types.Message):
 
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
+    global current_model_index
+    
     print("📸 Получено фото")
     msg = await message.answer("⏳ Анализирую фото...")
 
@@ -73,24 +85,34 @@ async def handle_photo(message: types.Message):
         photo = message.photo[-1]
         file = await bot.download(photo.file_id)
         image_bytes = file.read()
+        b64 = base64.b64encode(image_bytes).decode()
         
-        # Открываем через PIL
-        image = Image.open(io.BytesIO(image_bytes))
+        # Пробуем текущую модель
+        model = MODELS[current_model_index]
+        print(f"🤖 Использую модель: {model}")
         
-        # Отправляем в Gemini
-        response = model.generate_content([SYSTEM_PROMPT, image])
-        raw_text = response.text
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": SYSTEM_PROMPT},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                ]
+            }],
+            temperature=0.1,
+            max_tokens=500
+        )
         
-        print(f"Ответ Gemini: {raw_text}")
+        raw_text = response.choices[0].message.content
+        print(f"✅ Ответ: {raw_text}")
         
-        # Парсим JSON
         data = extract_json(raw_text)
         
         if not data:
             await msg.edit_text("❌ Не удалось проанализировать фото. Попробуй другое.")
             return
         
-        # Получаем данные
         score = float(data.get("score", 5.0))
         gender = data.get("gender", "male")
         if gender not in ["male", "female"]:
@@ -104,7 +126,6 @@ async def handle_photo(message: types.Message):
         advice = data.get("advice", ["спать 8 часов"])
         exercises = data.get("exercises", ["массаж лица"])
         
-        # Формируем ответ
         result = (
             f"📊 **Оценка:** `{score}/10`\n"
             f"🏷️ **Категория:** `{category}` ({gender_text})\n\n"
@@ -117,11 +138,19 @@ async def handle_photo(message: types.Message):
         await msg.edit_text(result, parse_mode="Markdown")
         
     except Exception as e:
-        print(f"Ошибка: {e}")
-        await msg.edit_text(f"❌ Произошла ошибка: {e}")
+        error_msg = str(e)
+        print(f"❌ Ошибка: {error_msg}")
+        
+        if "402" in error_msg or "429" in error_msg:
+            # Меняем модель на следующую
+            current_model_index = (current_model_index + 1) % len(MODELS)
+            await msg.edit_text(f"🔄 Лимит исчерпан. Пробую другую модель... Отправь фото ещё раз.")
+        else:
+            await msg.edit_text(f"❌ Ошибка: {error_msg[:100]}")
 
 async def main():
-    print("🟢 Бот запущен!")
+    print("🟢 Бот запущен (OpenRouter)")
+    print(f"📋 Доступно моделей: {len(MODELS)}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
